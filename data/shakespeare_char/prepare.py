@@ -34,6 +34,9 @@ def encode(s):
 def decode(l):
     return ''.join([itos[i] for i in l]) # decoder: take a list of integers, output a string
 
+# We may give hints to the model about different groups of tokens.
+print(f"Hint token value cutoffs: {[stoi['A'], stoi['a']]}")
+
 # create the train and test splits
 n = len(data)
 train_data = data[:int(n*0.9)]

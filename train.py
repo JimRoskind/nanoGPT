@@ -332,5 +332,11 @@ while True:
     if iter_num > max_iters:
         break
 
+from model import hint_token_type, hint_tokens
+if hint_token_type:
+    print(f"used hint_tokens {hint_tokens}")
+else:
+    print("No token hinting about alphabet was used")
+
 if ddp:
     destroy_process_group()

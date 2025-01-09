@@ -6,6 +6,9 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
+hint_token_type = True
+hint_tokens = (13, 39)
+
 
 import math
 import inspect
@@ -129,7 +132,9 @@ class GPT(nn.Module):
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
+            hint_wte = nn.Embedding(1 + len(hint_tokens), config.n_embd),
         ))
+
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -176,6 +181,11 @@ class GPT(nn.Module):
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+        if hint_token_type:
+            hint = torch.zeros_like(idx)
+            for i in hint_tokens:
+                hint +=  (i >= idx).long()
+            tok_emb += self.transformer.hint_wte(hint)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
