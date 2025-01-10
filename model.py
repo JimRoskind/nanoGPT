@@ -19,14 +19,15 @@ from torch.nn import functional as F
 # Support shrinking block size (context) as layers get larger (further
 # from original embedding).
 change_context_in_layers = True
-change_context_via_sum = True
+change_context_via_sum = False
 change_context_layer = 4  # The first changed layer
 assert change_context_layer > 0
-change_context_ratio = 0.5  # Discard reduction ratio per layer
+change_context_ratio = 0.9  # Discard reduction ratio per layer
+change_context_decrement = 0 # Number of contexts to drop, in addition to ratio
 assert change_context_ratio > 0.0 and change_context_ratio < 1.0
 def print_custom_settings():
     if change_context_in_layers:
-        print(f"Changing context starts at layer {change_context_layer} reducing context *{change_context_ratio}")
+        print(f"Changing context starts at layer {change_context_layer} reducing context *{change_context_ratio}, with decrement {change_context_decrement}")
         if change_context_via_sum:
             print(f"Discarded context will be summed into retained context")
         else:
@@ -140,8 +141,10 @@ class Block(nn.Module):
         if self.layer_index < change_context_layer:
             return x
         B, T, C = x.shape  # batch B, context depth T, embedding width C
+        assert change_context_ratio > 0.0 and change_context_ratio <= 1.0
+        assert change_context_decrement >= 0
         # hack: We might want to limit this to a multiple of 4 as well
-        new_T = int(T * change_context_ratio)
+        new_T = int(T * change_context_ratio - change_context_decrement)
         if new_T <= 0 or T == new_T:
             return x  # Never go lower than solo context
 
