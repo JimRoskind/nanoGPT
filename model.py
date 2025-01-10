@@ -19,10 +19,10 @@ from torch.nn import functional as F
 # Support shrinking block size (context) as layers get larger (further
 # from original embedding).
 change_context_in_layers = True
-change_context_via_sum = False
+change_context_via_sum = True
 change_context_layer = 4  # The first changed layer
 assert change_context_layer > 0
-change_context_ratio = 0.4  # Discard reduction ratio per layer
+change_context_ratio = 0.5  # Discard reduction ratio per layer
 assert change_context_ratio > 0.0 and change_context_ratio < 1.0
 def print_custom_settings():
     if change_context_in_layers:
@@ -131,29 +131,43 @@ class Block(nn.Module):
         # optimized for infernce vs training... but for now,
         # we'll just get it working.
         if change_context_in_layers:
-            if self.layer_index >= change_context_layer:
-                B, T, C = x.shape  # batch B, context depth T, embedding width C
-                # hack: We might want to limit this to a multiple of 4 as well
-                new_T = int(T * change_context_ratio)
-                if new_T > 0:  # Never go lower than solo context
-                    if not change_context_via_sum:
-                        # Just discard the top (eldest) elements of context.
-                        # TODO: Optimize:  I'm not sure which of the following two is
-                        # faster, but they are equivalent in function.
-                        # x = x[:, T - new_T:, :]
-                        x = x.narrow(1, T - new_T, new_T)
-                    else:
-                        # Retain lower section, and accumulate into top embedding.
-                        retained_T = new_T -1
-                        retained = x.narrow(1, T - retained_T, retained_T)
-                        sum = x[:, :retained_T, :].sum(dim=1).reshape(B, 1, C) / (T - retained_T)
-                        x = torch.cat((sum, retained), dim=1)
-                    assert new_T == x.shape[1]
-                    #print (f" Layer output shape {x.shape} for layer {self.layer_index}")
-                    #if self.layer_index == 5:
-                    #    print (1/0)
+            x = self.reduce_old_context(x)
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
+        return x
+
+    def reduce_old_context(self, x):
+        if self.layer_index < change_context_layer:
+            return x
+        B, T, C = x.shape  # batch B, context depth T, embedding width C
+        # hack: We might want to limit this to a multiple of 4 as well
+        new_T = int(T * change_context_ratio)
+        if new_T <= 0 or T == new_T:
+            return x  # Never go lower than solo context
+
+        if not change_context_via_sum:
+            # Just discard the topmost (eldest) hidden-states of context.
+            # TODO: Optimize:  I'm not sure which of the following two is
+            # faster, but they are equivalent in function.
+            # x = x[:, T - new_T:, :]
+            x = x.narrow(1, T - new_T, new_T)
+        else:
+            # Retain lower section, and accumulate into top embedding.
+            retained_T = new_T -1 # Leave room for sum.
+            sum = x[:, :retained_T, :].sum(dim=1).reshape(B, 1, C) / (T - retained_T)
+            if retained_T == 0:
+                x = sum
+            else:
+                # Retain the recent context unchanged.
+                # retained = x[:, T - retained_T:, :]
+                retained = x.narrow(1, T - retained_T, retained_T)
+                # Put the sum on top as though it was the eldest context.
+                x = torch.cat((sum, retained), dim=1)
+
+        assert new_T == x.shape[1]
+        #print (f" Layer output shape {x.shape} for layer {self.layer_index}")
+        #if self.layer_index == 5:
+        #    print (1/0)
         return x
 
 @dataclass
