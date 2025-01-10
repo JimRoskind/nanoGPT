@@ -19,9 +19,10 @@ from torch.nn import functional as F
 # Support shrinking block size (context) as layers get larger (further
 # from original embedding).
 change_context_in_layers = True
-change_context_via_sum = True
-change_context_layer = 1  # The first changed layer
-change_context_ratio = 0.85  # Reduction ratio per layer
+change_context_via_sum = False
+change_context_layer = 4  # The first changed layer
+assert change_context_layer > 0
+change_context_ratio = 0.4  # Discard reduction ratio per layer
 assert change_context_ratio > 0.0 and change_context_ratio < 1.0
 def print_custom_settings():
     if change_context_in_layers:
@@ -121,13 +122,14 @@ class Block(nn.Module):
         self.mlp = MLP(config)
         if change_context_in_layers:
             self.layer_index = layer_index
+            # self.n_layer = config.n_layer
 
     def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        # Until we have smarter attention, that discards context
-        # and doesn't bother with queries and attention that we
-        # will discard(?) here, just do the discard (or sum?)
-        # here of the to-be-discarded context.
+        # We could try to be smarter, and not do work for a
+        # context that will be discarded, but we might need
+        # the result for doing training. Maybe this can be
+        # optimized for infernce vs training... but for now,
+        # we'll just get it working.
         if change_context_in_layers:
             if self.layer_index >= change_context_layer:
                 B, T, C = x.shape  # batch B, context depth T, embedding width C
@@ -150,6 +152,7 @@ class Block(nn.Module):
                     #print (f" Layer output shape {x.shape} for layer {self.layer_index}")
                     #if self.layer_index == 5:
                     #    print (1/0)
+        x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
 
