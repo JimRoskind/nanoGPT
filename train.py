@@ -332,5 +332,10 @@ while True:
     if iter_num > max_iters:
         break
 
+# Support shrinking block size (context) as layers get larger (further
+# from original embedding).
+from model import print_custom_settings
+print_custom_settings()
+
 if ddp:
     destroy_process_group()

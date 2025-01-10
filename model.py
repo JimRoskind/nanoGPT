@@ -15,6 +15,24 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+#---------------------------------------------------
+# Support shrinking block size (context) as layers get larger (further
+# from original embedding).
+change_context_in_layers = True
+change_context_via_sum = True
+change_context_layer = 1  # The first changed layer
+change_context_ratio = 0.8  # Reduction ratio per layer
+def print_custom_settings():
+    if change_context_in_layers:
+        print(f"Changing context starts at layer {change_context_layer} reducing context *{change_context_ratio}")
+        if change_context_via_sum:
+            print(f"Discarded context will be summed into retained context")
+        else:
+            print(f"Discarded context will be deleted")
+    else:
+        print(f"Changing context in layer is disabled")
+#--------------------------------------------------------
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -93,15 +111,43 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer_index=0):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
+        if change_context_in_layers:
+            self.layer_index = layer_index
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
+        # Until we have smarter attention, that discards context
+        # and doesn't bother with queries and attention that we
+        # will discard(?) here, just do the discard (or sum?)
+        # here of the to-be-discarded context.
+        if change_context_in_layers:
+            if self.layer_index >= change_context_layer:
+                B, T, C = x.shape  # batch B, context depth T, embedding width C
+                # hack: We might want to limit this to a multiple of 4 as well
+                new_T = int(T * change_context_ratio)
+                if new_T > 0:  # Never go lower than solo context
+                    if not change_context_via_sum:
+                        # Just discard the top (eldest) elements of context.
+                        # TODO: Optimize:  I'm not sure which of the following two is
+                        # faster, but they are equivalent in function.
+                        # x = x[:, T - new_T:, :]
+                        x = x.narrow(1, T - new_T, new_T)
+                    else:
+                        # Retain lower section, and accumulate into top embedding.
+                        retained_T = new_T -1
+                        retained = x.narrow(1, T - retained_T, retained_T)
+                        sum = x[:, :retained_T, :].sum(dim=1).reshape(B, 1, C)
+                        x = torch.cat((sum, retained), dim=1)
+                    assert new_T == x.shape[1]
+                    #print (f" Layer output shape {x.shape} for layer {self.layer_index}")
+                    #if self.layer_index == 5:
+                    #    print (1/0)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -127,7 +173,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config, layer_index=i) for i in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -184,7 +230,21 @@ class GPT(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            if not change_context_in_layers:
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            else:
+                # We are currently(!!!) discarding "old" context at various
+                # layers, we need to similarly trim the targets (which thought
+                # they'd get predictions for all contexts!)
+                B, T, C = x.shape
+                B_target, T_target = targets.shape
+                assert B == B_target
+                # TODO: Optimize:  I'm not sure which of the following two is
+                # faster, but they are equivalent in function.
+                #targets = targets[:, T_target - T:]
+                targets = targets.narrow(1, T_target - T, T)
+                # Note we have to use "reshape(-1)" on targets, and can't "view(-1)"
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
