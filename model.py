@@ -20,8 +20,8 @@ from torch.nn import functional as F
 # from original embedding).
 change_context_in_layers = True
 change_context_via_sum = True
-change_context_layer = 2  # The first changed layer
-change_context_ratio = 0.8  # Reduction ratio per layer
+change_context_layer = 1  # The first changed layer
+change_context_ratio = 0.85  # Reduction ratio per layer
 assert change_context_ratio > 0.0 and change_context_ratio < 1.0
 def print_custom_settings():
     if change_context_in_layers:
@@ -32,7 +32,7 @@ def print_custom_settings():
             print(f"Discarded context will be deleted")
     else:
         print(f"Changing context in layer is disabled")
-print_customer_settings()
+print_custom_settings()
 #--------------------------------------------------------
 
 class LayerNorm(nn.Module):
