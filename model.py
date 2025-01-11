@@ -18,19 +18,19 @@ from torch.nn import functional as F
 #---------------------------------------------------
 # Support shrinking block size (context) as layers get larger (further
 # from original embedding).
-change_context_in_layers = True
-change_context_via_sum = False
-change_context_layer = 4  # The first changed layer
-assert change_context_layer > 0
+reduce_context_in_layers = True
+reduce_context_layer = 4  # The first changed layer, or None
+reduce_context_via_sum = True
+assert reduce_context_layer > 0
 # Best result so far is (0.9, 10) for shakespeare, summing...  but sample was terrible!?!
-change_context_ratio = 1.0  # Discard reduction ratio per layer
-change_context_decrement = 20 # Number of contexts to drop, in addition to ratio
-assert change_context_ratio > 0.0 and change_context_ratio <= 1.0
+reduce_context_ratio = 1.0  # Discard reduction ratio per layer
+reduce_context_decrement = 20 # Number of contexts to drop, in addition to ratio
+assert reduce_context_ratio > 0.0 and reduce_context_ratio <= 1.0
 def print_custom_settings():
-    if change_context_in_layers:
-        print(f"Changing context starts at layer {change_context_layer}")
-        print(f"reducing context *{change_context_ratio}, with decrement {change_context_decrement}")
-        if change_context_via_sum:
+    if reduce_context_in_layers:
+        print(f"Changing context starts at layer {reduce_context_layer}")
+        print(f"reducing context *{reduce_context_ratio}, with decrement {reduce_context_decrement}")
+        if reduce_context_via_sum:
             print(f"Discarded context will be summed into retained context")
         else:
             print(f"Discarded context will be deleted")
@@ -123,7 +123,7 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
-        if change_context_in_layers:
+        if reduce_context_in_layers:
             self.layer_index = layer_index
             # self.n_layer = config.n_layer
 
@@ -133,24 +133,24 @@ class Block(nn.Module):
         # the result for doing training. Maybe this can be
         # optimized for infernce vs training... but for now,
         # we'll just get it working.
-        if change_context_in_layers:
+        if reduce_context_in_layers:
             x = self.reduce_old_context(x)
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
 
     def reduce_old_context(self, x):
-        if self.layer_index < change_context_layer:
+        if self.layer_index < reduce_context_layer:
             return x
         B, T, C = x.shape  # batch B, context depth T, embedding width C
-        assert change_context_ratio > 0.0 and change_context_ratio <= 1.0
-        assert change_context_decrement >= 0
+        assert reduce_context_ratio > 0.0 and reduce_context_ratio <= 1.0
+        assert reduce_context_decrement >= 0
         # hack: We might want to limit this to a multiple of 4 as well
-        new_T = int(T * change_context_ratio - change_context_decrement)
+        new_T = int(T * reduce_context_ratio - reduce_context_decrement)
         if new_T <= 0 or T == new_T:
             return x  # Never go lower than solo context
 
-        if not change_context_via_sum:
+        if not reduce_context_via_sum:
             # Just discard the topmost (eldest) hidden-states of context.
             # TODO: Optimize:  I'm not sure which of the following two is
             # faster, but they are equivalent in function.
@@ -159,7 +159,7 @@ class Block(nn.Module):
         else:
             # Retain lower section, and accumulate into top embedding.
             retained_T = new_T -1 # Leave room for sum.
-            sum = x[:, :retained_T, :].sum(dim=1).reshape(B, 1, C) / (T - retained_T)
+            sum = x[:, :retained_T, :].sum(dim=1).reshape(B, 1, C) / ((T - retained_T) **0.5)
             if retained_T == 0:
                 x = sum
             else:
@@ -264,7 +264,7 @@ class GPT(nn.Module):
             if T == targets_T:
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             else:
-                assert change_context_in_layers
+                assert reduce_context_in_layers
                 # We are currently(!!!) discarding "older" context at various
                 # layers, so we need to similarly trim the targets predictions
                 # (which expected to get predictions for all contexts!)
