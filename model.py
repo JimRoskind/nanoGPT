@@ -18,18 +18,20 @@ from torch.nn import functional as F
 #---------------------------------------------------
 # Support shrinking block size (context) as layers get larger (further
 # from original embedding).
-reduce_context_in_layers = True
-reduce_context_layer = 4  # The first changed layer, or None
-reduce_context_via_sum = True
-assert reduce_context_layer > 0
+reduce_context_in_layers = False
+reduce_context_layer = 4  # The first layer (if any) to reduce context.
+assert not reduce_context_in_layers or reduce_context_layer > 0
+reduce_context_via_sum = True  # Add discarded state in layer to eldest layer (and divide by sqrt discard count)
 # Best result so far is (0.9, 10) for shakespeare, summing...  but sample was terrible!?!
-reduce_context_ratio = 1.0  # Discard reduction ratio per layer
-reduce_context_decrement = 20 # Number of contexts to drop, in addition to ratio
-assert reduce_context_ratio > 0.0 and reduce_context_ratio <= 1.0
+reduce_context_retain_rate = 1.0  # Percentage of contexts to retain at each layer.
+assert reduce_context_retain_rate > 0.0 and reduce_context_retain_rate <= 1.0
+reduce_context_decrement = 20 # Number of contexts to drop at each layer, in addition to percentage.
+assert reduce_context_decrement >= 0
+
 def print_custom_settings():
     if reduce_context_in_layers:
         print(f"Changing context starts at layer {reduce_context_layer}")
-        print(f"reducing context *{reduce_context_ratio}, with decrement {reduce_context_decrement}")
+        print(f"reducing context *{reduce_context_retain_rate}, with decrement {reduce_context_decrement}")
         if reduce_context_via_sum:
             print(f"Discarded context will be summed into retained context")
         else:
@@ -143,10 +145,10 @@ class Block(nn.Module):
         if self.layer_index < reduce_context_layer:
             return x
         B, T, C = x.shape  # batch B, context depth T, embedding width C
-        assert reduce_context_ratio > 0.0 and reduce_context_ratio <= 1.0
+        assert reduce_context_retain_rate > 0.0 and reduce_context_retain_rate <= 1.0
         assert reduce_context_decrement >= 0
         # hack: We might want to limit this to a multiple of 4 as well
-        new_T = int(T * reduce_context_ratio - reduce_context_decrement)
+        new_T = int(T * reduce_context_retain_rate - reduce_context_decrement)
         if new_T <= 0 or T == new_T:
             return x  # Never go lower than solo context
 
@@ -161,9 +163,10 @@ class Block(nn.Module):
             retained_T = new_T -1 # Leave room for sum.
             sum = x[:, :retained_T, :].sum(dim=1).reshape(B, 1, C) / ((T - retained_T) **0.5)
             if retained_T == 0:
-                x = sum
+                x = sum  # We summed everthing into the final context.
             else:
-                # Retain the recent context unchanged.
+                # Retain the recent contexts unchanged (except for the eldest
+                # hidden state, where we accumulate the sum of discards.
                 # retained = x[:, T - retained_T:, :]
                 retained = x.narrow(1, T - retained_T, retained_T)
                 # Put the sum on top as though it was the eldest context.
