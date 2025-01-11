@@ -19,12 +19,13 @@ from torch.nn import functional as F
 # Support shrinking block size (context) as layers get larger (further
 # from original embedding).
 change_context_in_layers = True
-change_context_via_sum = True
+change_context_via_sum = False
 change_context_layer = 4  # The first changed layer
 assert change_context_layer > 0
-change_context_ratio = 0.9  # Discard reduction ratio per layer
-change_context_decrement = 0 # Number of contexts to drop, in addition to ratio
-assert change_context_ratio > 0.0 and change_context_ratio < 1.0
+# Best result so far is (0.9, 10) for shakespeare, summing...  but sample was terrible!?!
+change_context_ratio = 1.0  # Discard reduction ratio per layer
+change_context_decrement = 20 # Number of contexts to drop, in addition to ratio
+assert change_context_ratio > 0.0 and change_context_ratio <= 1.0
 def print_custom_settings():
     if change_context_in_layers:
         print(f"Changing context starts at layer {change_context_layer}")
