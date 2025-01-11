@@ -19,7 +19,7 @@ from torch.nn import functional as F
 # Support shrinking block size (context) as layers get larger (further
 # from original embedding).
 change_context_in_layers = True
-change_context_via_sum = False
+change_context_via_sum = True
 change_context_layer = 4  # The first changed layer
 assert change_context_layer > 0
 change_context_ratio = 0.9  # Discard reduction ratio per layer
@@ -27,7 +27,8 @@ change_context_decrement = 0 # Number of contexts to drop, in addition to ratio
 assert change_context_ratio > 0.0 and change_context_ratio < 1.0
 def print_custom_settings():
     if change_context_in_layers:
-        print(f"Changing context starts at layer {change_context_layer} reducing context *{change_context_ratio}, with decrement {change_context_decrement}")
+        print(f"Changing context starts at layer {change_context_layer}")
+        print(f"reducing context *{change_context_ratio}, with decrement {change_context_decrement}")
         if change_context_via_sum:
             print(f"Discarded context will be summed into retained context")
         else:
@@ -249,29 +250,29 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
-            # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            if not change_context_in_layers:
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-            else:
-                # We are currently(!!!) discarding "old" context at various
-                # layers, we need to similarly trim the targets (which thought
-                # they'd get predictions for all contexts!)
-                B, T, C = x.shape
-                B_target, T_target = targets.shape
-                assert B == B_target
-                # TODO: Optimize:  I'm not sure which of the following two is
-                # faster, but they are equivalent in function.
-                #targets = targets[:, T_target - T:]
-                targets = targets.narrow(1, T_target - T, T)
-                # Note we have to use "reshape(-1)" on targets, and can't "view(-1)"
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-1)
-        else:
+        if targets is None:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
-
+        else:
+            # if we are given some desired targets also calculate the loss
+            logits = self.lm_head(x)
+            B, T, C = x.shape
+            targets_B, targets_T = targets.shape
+            assert B == targets_B
+            if T == targets_T:
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            else:
+                assert change_context_in_layers
+                # We are currently(!!!) discarding "older" context at various
+                # layers, so we need to similarly trim the targets predictions
+                # (which expected to get predictions for all contexts!)
+                # TODO: Optimize:  I'm not sure which of the following two is
+                # faster, but they are equivalent in function.
+                #targets = targets[:, targets_T - T:]
+                targets = targets.narrow(1, targets_T - T, T)
+                # Note we have to use "reshape(-1)" on targets, and can't "view(-1)"
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-1)
         return logits, loss
 
     def crop_block_size(self, block_size):
