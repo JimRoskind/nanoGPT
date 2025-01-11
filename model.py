@@ -184,9 +184,17 @@ class GPT(nn.Module):
         if hint_token_type:
             hint = torch.zeros_like(idx)
             for i in hint_tokens:
-                hint +=  (i >= idx).long()
-            tok_emb += self.transformer.hint_wte(hint)
-        x = self.transformer.drop(tok_emb + pos_emb)
+                hint +=  (i >= idx).long()  # Count the number of indicies that were exceeded.
+            hint_emb = self.transformer.hint_wte(hint)
+            # Embedding variance is setup to be summed as a pair.
+            # That means that the variance has already been
+            # effectively scaled with a division by sqrt(2).  Now we
+            # need to fix up the variance, by undoing that setting,
+            # and instead using sqrt(3).  As a result, we multiply by
+            # sqrt(2)/sqrt(3) == sqrt(2/3).
+            x = self.transformer.drop((tok_emb + pos_emb + hint_emb) *  math.sqrt(2/3))
+        else:
+            x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
