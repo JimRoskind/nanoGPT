@@ -332,9 +332,9 @@ while True:
     if iter_num > max_iters:
         break
 
-from model import hint_token_type, hint_tokens
+from model import hint_token_type, hint_token_lower, hint_token_upper
 if hint_token_type:
-    print(f"used hint_tokens {hint_tokens}")
+    print(f"used hint_tokens {(hint_token_upper, hint_token_lower)}")
 else:
     print("No token hinting about alphabet was used")
 
