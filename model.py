@@ -190,7 +190,7 @@ class GPT(nn.Module):
             idx -= lower_case * (hint_token_lower - hint_token_upper)
 
 
-            hint_emb = self.transformer.hint_wte(lower_case)
+            hint_emb = self.transformer.hint_wte(lower_case) # 1 When lower case
 
             # Embedding variance is setup to be summed as a pair.
             # That means that the variance has already been
@@ -231,6 +231,8 @@ class GPT(nn.Module):
             # This is really a hack... as I'm multiplying logit components by
             # hint probabilities. I should really calculate both probabilities,
             # and then multiply :-/.
+            # Hint probability P at index 1 when lower case.
+            # Maybe I should OVERWRITE the logits for of ALL the lower case vocab.
             logits[:, :, [i for i in range(hint_token_lower, hint_token_lower+26)]] += hint_probs[:,:,[1]] * logits[:, :, [i for i in range(hint_token_upper, hint_token_upper+26)]]
             logits[:, :, [i for i in range(hint_token_upper, hint_token_upper+26)]] *= hint_probs[:,:,[0]]
         if targets is None:
