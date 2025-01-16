@@ -54,7 +54,7 @@ class LayerNorm(nn.Module):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer_index=0):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
@@ -74,13 +74,20 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+        # Values to adjust attention temperature
+        self.layer_index = layer_index
+        self.n_layer = config.n_layer
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        heat_scale = 1.4
+        #heat_scale = 1.2 # Nicish results
+        #heat_scale = 0.9
+        key_temp = heat_scale ** abs(self.layer_index - self.n_layer)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) / key_temp # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
@@ -122,12 +129,10 @@ class Block(nn.Module):
     def __init__(self, config, layer_index=0):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        self.attn = CausalSelfAttention(config, layer_index=layer_index)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
-        if reduce_context_in_layers:
-            self.layer_index = layer_index
-            # self.n_layer = config.n_layer
+        self.layer_index = layer_index
 
     def forward(self, x):
         # We could try to be smarter, and not do work for a
