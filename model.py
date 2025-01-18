@@ -6,8 +6,10 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
-# Add positional embedding directly to token (vs add to Q and K in each layer)
-position_embed_token = False  
+# Do positional embedding directly to token (vs add to Q and K in each layer)
+position_embed_token = False
+# ..and if not... then.. Should each layer have a different positional encoding?
+position_embed_layers_differ = True
 
 
 import math
@@ -54,8 +56,13 @@ class CausalSelfAttention(nn.Module):
         if not position_embed_token:
             self.q_wpe_drop = nn.Dropout(config.dropout)
             self.v_wpe_drop = nn.Dropout(config.dropout)
-            self.q_wpe = config.q_wpe
-            self.v_wpe = config.v_wpe
+            if position_embed_layers_differ:
+                self.q_wpe = nn.Embedding(config.block_size, config.n_embd)
+                self.v_wpe = nn.Embedding(config.block_size, config.n_embd)
+            else:
+                self.q_wpe = config.q_wpe
+                self.v_wpe = config.v_wpe
+
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
