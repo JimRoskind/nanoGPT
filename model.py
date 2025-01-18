@@ -6,6 +6,9 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
+# Add positional embedding directly to token (vs add to Q and K in each layer)
+position_embed_token = False  
+
 
 import math
 import inspect
@@ -48,12 +51,21 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+        if not position_embed_token:
+            self.config = config
+            self.q_wpe_drop = nn.Dropout(config.dropout)
+            self.v_wpe_drop = nn.Dropout(config.dropout)
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+        if not position_embed_token:
+            positions = torch.arange(0, T, dtype=torch.long, device=q.device) # shape (t)
+            # position_embs = self.wpe_drop(self.config.GPT_wpe(positions))
+            q = q.add(self.q_wpe_drop(self.config.q_wpe(positions)))
+            v = v.add(self.v_wpe_drop(self.config.v_wpe(positions)))
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
@@ -130,6 +142,12 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
+        if not position_embed_token:
+            config.q_wpe = self.transformer.wpe
+            config.v_wpe = nn.Embedding(config.block_size, config.n_embd)
+            # Hack: Can/should I add this here??
+            self.transformer.v_wpe = self.config.v_wpe
+
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
@@ -175,8 +193,12 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        if position_embed_token:
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            x = self.transformer.drop(tok_emb + pos_emb)
+        else:
+            # Don't add positional embedding here!
+            x = self.transformer.drop(tok_emb)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
