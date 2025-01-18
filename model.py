@@ -52,9 +52,10 @@ class CausalSelfAttention(nn.Module):
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
         if not position_embed_token:
-            self.config = config
             self.q_wpe_drop = nn.Dropout(config.dropout)
             self.v_wpe_drop = nn.Dropout(config.dropout)
+            self.q_wpe = config.q_wpe
+            self.v_wpe = config.v_wpe
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -63,9 +64,8 @@ class CausalSelfAttention(nn.Module):
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
         if not position_embed_token:
             positions = torch.arange(0, T, dtype=torch.long, device=q.device) # shape (t)
-            # position_embs = self.wpe_drop(self.config.GPT_wpe(positions))
-            q = q.add(self.q_wpe_drop(self.config.q_wpe(positions)))
-            v = v.add(self.v_wpe_drop(self.config.v_wpe(positions)))
+            q = q.add(self.q_wpe_drop(self.q_wpe(positions)))
+            v = v.add(self.v_wpe_drop(self.v_wpe(positions)))
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
@@ -135,18 +135,16 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+        config.q_wpe = nn.Embedding(config.block_size, config.n_embd)
+        config.v_wpe = nn.Embedding(config.block_size, config.n_embd) # Wasteful :-/ Could use big if-block
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wpe = config.q_wpe,
+            v_wpe = config.v_wpe,
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
-        if not position_embed_token:
-            config.q_wpe = self.transformer.wpe
-            config.v_wpe = nn.Embedding(config.block_size, config.n_embd)
-            # Hack: Can/should I add this here??
-            self.transformer.v_wpe = self.config.v_wpe
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
