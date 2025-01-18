@@ -28,10 +28,20 @@ assert reduce_context_retain_rate > 0.0 and reduce_context_retain_rate <= 1.0
 reduce_context_decrement = 20 # Number of contexts to drop at each layer, in addition to percentage.
 assert reduce_context_decrement >= 0
 
+# Attention uses softMax() to select "v" contributions.  We can change the
+# "heat" to more radically focus the attention.
+attention_default=True  # Default means no "key_heat" in attention calculation
+attention_heat_trained=False  # Use per-layer training to select heat (vs fixed constant)
+
+
 def print_custom_settings():
+    print(f"Heat for attention_default={attention_default}, "
+    f"opt trained:{attention_heat_trained}")
+
     if reduce_context_in_layers:
         print(f"Changing context starts at layer {reduce_context_layer}")
-        print(f"reducing context *{reduce_context_retain_rate}, with decrement {reduce_context_decrement}")
+        print(f"reducing context *{reduce_context_retain_rate}, "
+        f" with decrement {reduce_context_decrement}")
         if reduce_context_via_sum:
             print(f"Discarded context will be summed into retained context")
         else:
@@ -77,16 +87,25 @@ class CausalSelfAttention(nn.Module):
         # Values to adjust attention temperature
         self.layer_index = layer_index
         self.n_layer = config.n_layer
+        if not attention_default and attention_heat_trained:
+            self.raw_temp = torch.nn.Parameter(data=torch.Tensor(1), requires_grad=True)
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        heat_scale = 1.4
-        #heat_scale = 1.2 # Nicish results
-        #heat_scale = 0.9
-        key_temp = heat_scale ** abs(self.layer_index - self.n_layer)
+        if attention_default:
+            key_temp = 1.0
+        else:
+            if attention_heat_trained: # Train amount of heat.
+                key_temp = torch.sigmoid(self.raw_temp) + 0.5   # Got 1.4705
+                # heat_scale = 1.1  # Val loss 1.4689... which is good
+                # heat_scale = 1.4 # bad val... but reads well
+            else:
+                heat_scale = 1.2 # OK results
+                #heat_scale = 0.9
+                key_temp = heat_scale ** abs(self.layer_index - self.n_layer)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) / key_temp # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
