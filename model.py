@@ -6,9 +6,13 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
+
 # Positional embedding directly with token (vs add to Q and K in each layer)
-position_embed_with_token = True
-# ..and if not... then.. Should each layer have a different positional encoding?
+position_embed_with_token = False
+# The next options are ONLY used when position_embed_with_token is false.
+# Should we use separate trained embedding for q vs k?
+position_embed_different_q_k = True
+# Should each transformer layer have a different positional encoding?
 position_embed_layers_differ = True
 
 
@@ -33,7 +37,7 @@ class LayerNorm(nn.Module):
 
 class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
@@ -56,15 +60,22 @@ class CausalSelfAttention(nn.Module):
         if not position_embed_with_token:
             # We have to add in position here, so we should handle our dropout.
             self.q_wpe_drop = nn.Dropout(config.dropout)
-            self.v_wpe_drop = nn.Dropout(config.dropout)
-            if position_embed_layers_differ:
-                # Provide emebbing specific to this lay, and use separately trained
-                # emebbing for q vs v.
-                self.q_wpe = nn.Embedding(config.block_size, config.n_embd)
-                self.v_wpe = nn.Embedding(config.block_size, config.n_embd)
+            if position_embed_different_q_k:
+                self.k_wpe_drop = nn.Dropout(config.dropout)
             else:
+                self.k_wpe_drop = self.q_wpe_drop
+            if position_embed_layers_differ:
+                # Provide embeding specific to this layer, and use separately
+                # trained emebbing for q vs k.
+                self.q_wpe = nn.Embedding(config.block_size, config.n_embd)
+                if position_embed_layers_differ:
+                    self.k_wpe = nn.Embedding(config.block_size, config.n_embd)
+                else:
+                    self.k_wpe = self.q_wpe
+            else:
+                # Use the same (provided) embedding in all layers.
                 self.q_wpe = config.q_wpe
-                self.v_wpe = config.v_wpe
+                self.k_wpe = config.k_wpe
 
 
     def forward(self, x):
@@ -75,7 +86,7 @@ class CausalSelfAttention(nn.Module):
         if not position_embed_with_token:
             positions = torch.arange(0, T, dtype=torch.long, device=q.device) # shape (t)
             q = q.add(self.q_wpe_drop(self.q_wpe(positions)))
-            v = v.add(self.v_wpe_drop(self.v_wpe(positions)))
+            v = v.add(self.k_wpe_drop(self.k_wpe(positions)))
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
@@ -115,10 +126,10 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        self.attn = CausalSelfAttention(config, layer=layer)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
@@ -148,13 +159,13 @@ class GPT(nn.Module):
         # Anticipating possible use of separate positional encodings,
         # generate two now in case we need them.
         config.q_wpe = nn.Embedding(config.block_size, config.n_embd)
-        config.v_wpe = nn.Embedding(config.block_size, config.n_embd) # Wasteful :-/ Could use big if-block
+        config.k_wpe = nn.Embedding(config.block_size, config.n_embd) # Wasteful :-/ Could use big if-block
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = config.q_wpe,
-            v_wpe = config.v_wpe,
+            k_wpe = config.k_wpe,
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config, layer=i) for i in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
 
@@ -232,6 +243,7 @@ class GPT(nn.Module):
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
         self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+        self.transformer.k_wpe.weight = nn.Parameter(self.transformer.k_wpe.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
