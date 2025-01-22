@@ -6,8 +6,8 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
-# Do positional embedding directly to token (vs add to Q and K in each layer)
-position_embed_token = False
+# Positional embedding directly with token (vs add to Q and K in each layer)
+position_embed_with_token = True
 # ..and if not... then.. Should each layer have a different positional encoding?
 position_embed_layers_differ = True
 
@@ -53,10 +53,13 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
-        if not position_embed_token:
+        if not position_embed_with_token:
+            # We have to add in position here, so we should handle our dropout.
             self.q_wpe_drop = nn.Dropout(config.dropout)
             self.v_wpe_drop = nn.Dropout(config.dropout)
             if position_embed_layers_differ:
+                # Provide emebbing specific to this lay, and use separately trained
+                # emebbing for q vs v.
                 self.q_wpe = nn.Embedding(config.block_size, config.n_embd)
                 self.v_wpe = nn.Embedding(config.block_size, config.n_embd)
             else:
@@ -69,7 +72,7 @@ class CausalSelfAttention(nn.Module):
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        if not position_embed_token:
+        if not position_embed_with_token:
             positions = torch.arange(0, T, dtype=torch.long, device=q.device) # shape (t)
             q = q.add(self.q_wpe_drop(self.q_wpe(positions)))
             v = v.add(self.v_wpe_drop(self.v_wpe(positions)))
@@ -142,6 +145,8 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+        # Anticipating possible use of separate positional encodings,
+        # generate two now in case we need them.
         config.q_wpe = nn.Embedding(config.block_size, config.n_embd)
         config.v_wpe = nn.Embedding(config.block_size, config.n_embd) # Wasteful :-/ Could use big if-block
         self.transformer = nn.ModuleDict(dict(
@@ -198,7 +203,8 @@ class GPT(nn.Module):
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        if position_embed_token:
+        if position_embed_with_token:
+            # We can't even use a different embedding for k vs q, since we add here.
             pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
             x = self.transformer.drop(tok_emb + pos_emb)
         else:
